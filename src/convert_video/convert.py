@@ -1,27 +1,19 @@
 import glob
 import itertools as it
 import json
-import logging
 import os
 import shutil
 import sys
-from logging import basicConfig, getLogger
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Union
 from unittest import skip
 from unittest.mock import DEFAULT
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-console_handler = logging.StreamHandler(sys.stdout)
-# log_format = logging.Formatter(
-#    "%(filename)s] %(funcName)s() -> Line %(lineno)d | %(levelname)s: %(message)s"
-# )
-# console_handler.setFormatter(log_format)
-logger.addHandler(console_handler)
-
-
 import ffmpeg
+
+from .logger import logger
 
 VIDEO_EXTS = [
     "wmv",
@@ -44,9 +36,15 @@ DEFAULT_PRESET = "slow"
 DEFAULT_SCALE_FACTOR = 0.5
 DEFAULT_TUNE = "fastdecode"
 DEFAULT_GOP_INTERVAL = 10
+DEFAULT_PIX_FMT = "yuv444p10le"
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+
+def format_run_time_str(start: datetime, finish: datetime) -> str:
+    td = finish - start
+    total_seconds = int(td.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
 def get_output_path(input_path, suffix=None):
@@ -90,8 +88,7 @@ def create_video_filter(filter_converted=True):
         if filter_converted:
             fmt = probe.get("format", {})
             tags = fmt.get("tags", {})
-            comment = tags.get("comment") or tags.get("Comment") or ""
-            return "converted" not in comment.lower()
+            return not tags.get("converted")
         return True
 
     return video_filter
@@ -140,6 +137,7 @@ def convert_video(input_path, output_path, overwrite_existing=False, **kwargs):
     print(f"tune = {tune}")
     gop_interval = kwargs.get("gop_interval", DEFAULT_GOP_INTERVAL)
     print(f"gop_interval = {gop_interval}")
+    pix_fmt = kwargs.get("pix_fmt", DEFAULT_PIX_FMT)
 
     gop = get_gop(stream, gop_interval)
 
@@ -161,10 +159,21 @@ def convert_video(input_path, output_path, overwrite_existing=False, **kwargs):
             g=gop,  # sets the GOP size / maximum keyframe interval
             keyint_min=gop,
             preset=preset,
-            pix_fmt="yuv444p10le",  # forces 10-bit color depth with 4:4:4 chroma subsampling
-            movflags="+faststart",
-            map_metadata=0,  # Added: copies all global metadata from the first input (input 0)
-            metadata="comment=converted",  # Added: injects or overwrites the 'comment' metadata tag
+            pix_fmt=pix_fmt,  # forces 10-bit color depth with 4:4:4 chroma subsampling
+            map_metadata=0,  # copies all global metadata from the first input (input 0)
+            map=0,
+            movflags="+faststart+use_metadata_tags",
+            **{
+                "metadata:g:0": "converted=1",
+                "metadata:g:1": f"crf={crf}",
+                "metadata:g:2": f"scale_factor={scale_factor}",
+                "metadata:g:3": f"preset={preset}",
+                "metadata:g:4": f"tune={tune}",
+                "metadata:g:5": f"gop_interval={gop_interval}",
+                "metadata:g:6": f"gop={gop}",
+                "metadata:g:7": f"keyint_min={gop}",
+                "metadata:g:8": f"pix_fmt={pix_fmt}",
+            },
         )
         .global_args("-v", "quiet", "-stats", "-n")
         .run()
@@ -178,8 +187,12 @@ def run(path=".", recursive=False, filter_converted=True, **kwargs):
 
     path = Path(path)
     video_filter = create_video_filter(filter_converted)
-    input_paths = filter(video_filter, get_input_paths(path=path, recursive=recursive))
+    input_paths = list(
+        filter(video_filter, get_input_paths(path=path, recursive=recursive))
+    )
+    print(len(input_paths))
     for input_path in input_paths:
+        print(input_path)
         count += 1
         input_path = Path(input_path)
         output_path = get_output_path(
@@ -188,10 +201,11 @@ def run(path=".", recursive=False, filter_converted=True, **kwargs):
         dest_path = input_path.parent.joinpath(
             output_path.parts[-1]
         )  # dest path for covnerted video
-        if dest_path.exists and not kwargs.get("overwrite_existing"):
+        if all([dest_path.exists(), not kwargs.get("overwrite_existing")]):
             logger.info(f"Skipping {output_path.parts[-1]}: already converted")
             continue
-        logger.info(f"Converting: {input_path.parts[-1]}")
+        logger.info(f"Starting: {input_path.parts[-1]}")
+        start_time = datetime.fromtimestamp(time.time())
         try:
             convert_video(input_path.as_posix(), output_path.as_posix(), **kwargs)
         except Exception as e:
@@ -203,8 +217,7 @@ def run(path=".", recursive=False, filter_converted=True, **kwargs):
             else:
                 continue
         if output_path.exists():
-            dest = input_path.parent.joinpath(output_path.parts[-1])
-            shutil.move(output_path, dest)
+            shutil.move(output_path, dest_path)
             logger.info(
                 f"moved {output_path.parts[-1]} to {input_path.parent.absolute()}"
             )
@@ -215,7 +228,10 @@ def run(path=".", recursive=False, filter_converted=True, **kwargs):
                     "can't delete temporary output directory because it's not empty"
                 )
         completed += 1
-        logger.info(f"finished converting {input_path}")
+        finish_time = datetime.fromtimestamp(time.time())
+        logger.info(
+            f"finished converting {input_path} in {format_run_time_str(start_time,finish_time)}"
+        )
 
     logger.info(f"converted {completed} out of {count} videos")
     if errs:
