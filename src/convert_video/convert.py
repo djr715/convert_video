@@ -37,6 +37,8 @@ VIDEO_EXTS = [
     "asf",
 ]
 
+DEFAULT_SUFFIX = "converted"
+
 DEFAULT_CRF = 21.6
 DEFAULT_PRESET = "slow"
 DEFAULT_SCALE_FACTOR = 0.5
@@ -47,9 +49,11 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def get_output_path(input_path):
+def get_output_path(input_path, suffix=None):
+    if not suffix:
+        suffix = DEFAULT_SUFFIX
     input_path = Path(input_path)
-    new_suffix = f".converted{input_path.suffix}"
+    new_suffix = f".{suffix}{input_path.suffix}"
     output_name = input_path.with_suffix(new_suffix).parts[-1]
 
     output_dir = input_path.parent.joinpath("tmp")
@@ -73,6 +77,24 @@ def get_input_paths(path=Path("."), recursive=False):
     return it.chain.from_iterable(
         glob.iglob(pattern, recursive=recursive, root_dir=path) for pattern in patterns
     )
+
+
+def create_video_filter(filter_converted=True):
+    def video_filter(video_path):
+        video_path = Path(video_path)
+        try:
+            probe = ffmpeg.probe(video_path)
+        except ffmpeg.Error as e:
+            logger.info(f"{video_path} is not a video")
+            return False
+        if filter_converted:
+            fmt = probe.get("format", {})
+            tags = fmt.get("tags", {})
+            comment = tags.get("comment") or tags.get("Comment") or ""
+            return "converted" not in comment.lower()
+        return True
+
+    return video_filter
 
 
 def get_video_stream(path):
@@ -104,7 +126,7 @@ def get_new_scale(vid_stream, scale_factor: Union[int, float]):
     return (w, -2)
 
 
-def convert_video(input_path, output_path, **kwargs):
+def convert_video(input_path, output_path, overwrite_existing=False, **kwargs):
     input_path, output_path = str(input_path), str(output_path)
     stream = get_video_stream(input_path)
 
@@ -129,6 +151,7 @@ def convert_video(input_path, output_path, **kwargs):
         .filter("scale", w, h)
         .output(
             output_path,
+            n=None,
             vcodec="libx265",
             **{"x265-params": "log-level=error"},
             **{"tag:v": "hvc1"},
@@ -140,23 +163,34 @@ def convert_video(input_path, output_path, **kwargs):
             preset=preset,
             pix_fmt="yuv444p10le",  # forces 10-bit color depth with 4:4:4 chroma subsampling
             movflags="+faststart",
+            map_metadata=0,  # Added: copies all global metadata from the first input (input 0)
+            metadata="comment=converted",  # Added: injects or overwrites the 'comment' metadata tag
         )
-        .global_args("-v", "quiet", "-stats")
+        .global_args("-v", "quiet", "-stats", "-n")
         .run()
     )
 
 
-def run(path=".", recursive=False, **kwargs):
+def run(path=".", recursive=False, filter_converted=True, **kwargs):
     errs = []
     count = 0
     completed = 0
 
     path = Path(path)
-    input_paths = get_input_paths(path=path, recursive=recursive)
+    video_filter = create_video_filter(filter_converted)
+    input_paths = filter(video_filter, get_input_paths(path=path, recursive=recursive))
     for input_path in input_paths:
         count += 1
         input_path = Path(input_path)
-        output_path = get_output_path(input_path)
+        output_path = get_output_path(
+            input_path, suffix=kwargs.get("suffix") or DEFAULT_SUFFIX
+        )
+        dest_path = input_path.parent.joinpath(
+            output_path.parts[-1]
+        )  # dest path for covnerted video
+        if dest_path.exists and not kwargs.get("overwrite_existing"):
+            logger.info(f"Skipping {output_path.parts[-1]}: already converted")
+            continue
         logger.info(f"Converting: {input_path.parts[-1]}")
         try:
             convert_video(input_path.as_posix(), output_path.as_posix(), **kwargs)
