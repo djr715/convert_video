@@ -7,17 +7,20 @@ from .logger import logger
 
 
 def is_video(video_path):
-    try:
-        ffmpeg.probe(video_path)
-        return True
-    except ffmpeg.Error as e:
-        logger.info(f"{video_path} is not a video")
+    video_path = Path(video_path)
+    if video_path.is_file():
+        try:
+            ffmpeg.probe(video_path)
+            return True
+        except ffmpeg.Error as e:
+            logger.info(f"{video_path} is not a video")
+    return False
 
 
 def get_vid_dict(path=".", recursive=False):
     d = defaultdict(list)
     for file in Path(path).iterdir():
-        if file.is_file() and is_video(path):
+        if is_video(file):
             key = file.parent.joinpath(file.stem.replace(".converted", "")).as_posix()
             d[key].append(file)
         elif file.is_dir() and recursive == True:
