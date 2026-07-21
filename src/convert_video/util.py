@@ -27,7 +27,11 @@ def move_finished(vid_dir=".", done_dir="done", recursive=False):
         if len(value) == 2 and any(["converted" in str(v) for v in value]):
             for vid in value:
                 src = vid
+<<<<<<< HEAD
                 dst = vid_dir.joinpath(src)
+=======
+                dst = done_dir.joinpath(src)
+>>>>>>> 3c7c854... fix util.move_finished
                 shutil.move(src, dst)
 
 
