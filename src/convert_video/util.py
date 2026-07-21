@@ -1,3 +1,4 @@
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,6 +16,19 @@ def is_video(video_path):
         except ffmpeg.Error as e:
             logger.info(f"{video_path} is not a video")
     return False
+
+
+def move_finished(vid_dir=".", done_dir="done", recursive=False):
+    vid_dir = Path(vid_dir)
+    done_dir = Path(done_dir)
+    done_dir.mkdir(parents=True, exist_ok=True)
+    vid_dict = get_vid_dict(vid_dir, recursive=recursive)
+    for key, value in vid_dict.items():
+        if len(value) == 2 and any(["converted" in str(v) for v in value]):
+            for vid in value:
+                src = vid
+                dst = vid_dir.joinpath(src)
+                shutil.move(src, dst)
 
 
 def get_vid_dict(path=".", recursive=False):
