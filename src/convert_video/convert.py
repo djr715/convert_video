@@ -161,7 +161,6 @@ def convert_video(input_path, output_path, overwrite_existing=False, **kwargs):
             preset=preset,
             pix_fmt=pix_fmt,  # forces 10-bit color depth with 4:4:4 chroma subsampling
             map_metadata=0,  # copies all global metadata from the first input (input 0)
-            map=0,
             movflags="+faststart+use_metadata_tags",
             **{
                 "metadata:g:0": "converted=1",
